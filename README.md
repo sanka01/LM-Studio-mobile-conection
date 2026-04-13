@@ -84,7 +84,8 @@ Variáveis de ambiente:
 - `GET /` → interface web
 - `GET /health` → status do relay
 - `GET /api/models` → lista modelos disponíveis (via LM Studio)
-- `POST /api/chat` → envia mensagem usando o modelo selecionado (ou `LM_MODEL` padrão)
+- `POST /api/chat` → envia mensagem com resposta única (modo tradicional)
+- `POST /api/chat/stream` → envia mensagem e retorna progresso em streaming (SSE com tokens parciais)
 
 ## Segurança (importante)
 
@@ -98,6 +99,6 @@ Este MVP é para desenvolvimento. Para uso real:
 ## Próximos passos sugeridos
 
 - Histórico de conversa persistente.
-- Streaming de tokens.
+- Indicador de progresso/latência durante geração (já implementado em streaming SSE).
 - Modo PWA para "instalar" no celular.
 - Login simples por PIN.

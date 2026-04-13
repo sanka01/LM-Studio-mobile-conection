@@ -21,6 +21,22 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function sendSseHeaders(res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+  });
+}
+
+function writeSseEvent(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
 async function parseJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -52,6 +68,97 @@ async function fetchModelsFromLmStudio() {
     models,
     raw: payload
   };
+}
+
+async function streamChatFromLmStudio(res, selectedModel, userMessage) {
+  const upstreamResponse = await fetch(`${LM_STUDIO_BASE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: selectedModel,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userMessage }
+      ],
+      max_tokens: MAX_TOKENS,
+      temperature: TEMPERATURE,
+      stream: true
+    })
+  });
+
+  if (!upstreamResponse.ok) {
+    const details = await upstreamResponse.text();
+    writeSseEvent(res, 'error', {
+      error: 'Erro do LM Studio.',
+      details,
+      status: upstreamResponse.status
+    });
+    return res.end();
+  }
+
+  if (!upstreamResponse.body) {
+    writeSseEvent(res, 'error', { error: 'Resposta sem stream no servidor upstream.' });
+    return res.end();
+  }
+
+  const decoder = new TextDecoder('utf8');
+  let buffer = '';
+  let answer = '';
+
+  for await (const chunk of upstreamResponse.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || !line.startsWith('data:')) continue;
+
+      const payloadText = line.slice(5).trim();
+      if (payloadText === '[DONE]') {
+        writeSseEvent(res, 'done', { answer });
+        return res.end();
+      }
+
+      try {
+        const parsed = JSON.parse(payloadText);
+        const delta =
+          parsed?.choices?.[0]?.delta?.content ||
+          parsed?.choices?.[0]?.text ||
+          '';
+
+        if (delta) {
+          answer += delta;
+          writeSseEvent(res, 'token', { token: delta, answer });
+        }
+      } catch {
+        // ignora chunks de heartbeat/parciais inválidos
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    try {
+      const line = buffer.trim();
+      if (line.startsWith('data:')) {
+        const payloadText = line.slice(5).trim();
+        if (payloadText !== '[DONE]') {
+          const parsed = JSON.parse(payloadText);
+          const delta = parsed?.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            answer += delta;
+            writeSseEvent(res, 'token', { token: delta, answer });
+          }
+        }
+      }
+    } catch {
+      // ignora payload final inválido
+    }
+  }
+
+  writeSseEvent(res, 'done', { answer });
+  return res.end();
 }
 
 const server = http.createServer(async (req, res) => {
@@ -136,6 +243,34 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { answer, raw: payload });
     } catch (error) {
       return sendJson(res, 500, { error: 'Falha ao processar requisição.', details: error.message });
+    }
+  }
+
+  if (req.method === 'POST' && req.url === '/api/chat/stream') {
+    try {
+      const body = await parseJsonBody(req);
+      const selectedModel = String(body.model || LM_MODEL || '').trim();
+      const userMessage = String(body.message || '').trim();
+
+      if (!selectedModel) {
+        sendSseHeaders(res);
+        writeSseEvent(res, 'error', { error: 'Defina LM_MODEL antes de iniciar o servidor.' });
+        return res.end();
+      }
+
+      if (!userMessage) {
+        sendSseHeaders(res);
+        writeSseEvent(res, 'error', { error: 'Mensagem vazia.' });
+        return res.end();
+      }
+
+      sendSseHeaders(res);
+      writeSseEvent(res, 'started', { model: selectedModel });
+      return streamChatFromLmStudio(res, selectedModel, userMessage);
+    } catch (error) {
+      sendSseHeaders(res);
+      writeSseEvent(res, 'error', { error: 'Falha ao processar streaming.', details: error.message });
+      return res.end();
     }
   }
 

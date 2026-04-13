@@ -11,11 +11,13 @@
       .msg { margin: 10px 0; white-space: pre-wrap; }
       .user { color: #0b57d0; }
       .assistant { color: #137333; }
+      .pending { color: #666; font-style: italic; }
       textarea { width: 100%; min-height: 88px; }
       button { margin-top: 8px; padding: 10px 14px; }
       .hint { color: #666; font-size: 0.9rem; }
       .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
       select { padding: 8px; max-width: 100%; flex: 1; }
+      #status { color: #444; font-size: 0.9rem; min-height: 1.2em; margin: 8px 0; }
     </style>
   </head>
   <body>
@@ -30,6 +32,7 @@
     </div>
 
     <div id="chat" class="chat"></div>
+    <p id="status"></p>
 
     <textarea id="input" placeholder="Digite sua mensagem..."></textarea>
     <button id="send">Enviar</button>
@@ -40,13 +43,40 @@
       const sendBtn = document.getElementById('send');
       const modelSelectEl = document.getElementById('modelSelect');
       const reloadModelsBtn = document.getElementById('reloadModels');
+      const statusEl = document.getElementById('status');
 
-      function appendMsg(role, text) {
+      function appendMsg(role, text, extraClass = '') {
         const div = document.createElement('div');
-        div.className = `msg ${role}`;
+        div.className = `msg ${role} ${extraClass}`.trim();
         div.textContent = `${role === 'user' ? 'Você' : 'Assistente'}: ${text}`;
         chatEl.appendChild(div);
         chatEl.scrollTop = chatEl.scrollHeight;
+        return div;
+      }
+
+      function updateMsg(el, role, text, extraClass = '') {
+        el.className = `msg ${role} ${extraClass}`.trim();
+        el.textContent = `${role === 'user' ? 'Você' : 'Assistente'}: ${text}`;
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+
+      function parseSseBlocks(rawBlock) {
+        const lines = rawBlock.split('\n');
+        let event = 'message';
+        let data = '';
+
+        lines.forEach((line) => {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          if (line.startsWith('data:')) data += line.slice(5).trim();
+        });
+
+        if (!data) return null;
+
+        try {
+          return { event, payload: JSON.parse(data) };
+        } catch {
+          return null;
+        }
       }
 
       async function sendMessage() {
@@ -61,24 +91,69 @@
         appendMsg('user', message);
         inputEl.value = '';
         sendBtn.disabled = true;
+        modelSelectEl.disabled = true;
+        reloadModelsBtn.disabled = true;
+
+        const assistantLine = appendMsg('assistant', 'Aguardando geração da resposta…', 'pending');
+        let assistantText = '';
+
+        const startAt = Date.now();
+        const timer = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - startAt) / 1000);
+          statusEl.textContent = `Gerando resposta... ${elapsed}s`;
+          if (!assistantText) {
+            const dots = '.'.repeat((elapsed % 3) + 1);
+            updateMsg(assistantLine, 'assistant', `Aguardando geração da resposta${dots}`, 'pending');
+          }
+        }, 500);
 
         try {
-          const resp = await fetch('/api/chat', {
+          const resp = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message, model })
           });
 
-          const data = await resp.json();
-          if (!resp.ok) {
-            appendMsg('assistant', `Erro: ${data.error || 'Falha desconhecida'}`);
-          } else {
-            appendMsg('assistant', data.answer || '(sem resposta)');
+          if (!resp.ok || !resp.body) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || 'Falha desconhecida no streaming.');
+          }
+
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder('utf-8');
+          let buffer = '';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+
+            for (const block of blocks) {
+              const parsed = parseSseBlocks(block.trim());
+              if (!parsed) continue;
+
+              if (parsed.event === 'token') {
+                assistantText = parsed.payload.answer || `${assistantText}${parsed.payload.token || ''}`;
+                updateMsg(assistantLine, 'assistant', assistantText || '(sem resposta)');
+              } else if (parsed.event === 'error') {
+                throw new Error(parsed.payload.error || 'Erro de streaming.');
+              } else if (parsed.event === 'done') {
+                assistantText = parsed.payload.answer || assistantText;
+                updateMsg(assistantLine, 'assistant', assistantText || '(sem resposta)');
+              }
+            }
           }
         } catch (error) {
-          appendMsg('assistant', `Erro de conexão: ${error.message}`);
+          updateMsg(assistantLine, 'assistant', `Erro de conexão: ${error.message}`);
         } finally {
+          clearInterval(timer);
+          statusEl.textContent = '';
           sendBtn.disabled = false;
+          modelSelectEl.disabled = false;
+          reloadModelsBtn.disabled = false;
           inputEl.focus();
         }
       }
