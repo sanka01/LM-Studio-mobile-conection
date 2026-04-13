@@ -132,7 +132,13 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const answer = payload?.choices?.[0]?.message?.content || '';
+      const messagePayload = payload?.choices?.[0]?.message || {};
+      const answer = [
+        messagePayload.content,
+        messagePayload.reasoning_content,
+        payload?.choices?.[0]?.text
+      ].find((value) => typeof value === 'string' && value.trim().length > 0) || '';
+
       return sendJson(res, 200, { answer, raw: payload });
     } catch (error) {
       return sendJson(res, 500, { error: 'Falha ao processar requisição.', details: error.message });
