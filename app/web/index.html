@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LM Studio Mobile Chat</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 16px; }
+      h1 { margin-top: 8px; }
+      .chat { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 280px; margin-bottom: 12px; }
+      .msg { margin: 10px 0; white-space: pre-wrap; }
+      .user { color: #0b57d0; }
+      .assistant { color: #137333; }
+      textarea { width: 100%; min-height: 88px; }
+      button { margin-top: 8px; padding: 10px 14px; }
+      .hint { color: #666; font-size: 0.9rem; }
+      .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+      select { padding: 8px; max-width: 100%; flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>LM Studio Mobile Chat</h1>
+    <p class="hint">Conectado ao relay local exposto por túnel seguro.</p>
+
+    <div class="row">
+      <select id="modelSelect">
+        <option value="">Carregando modelos...</option>
+      </select>
+      <button id="reloadModels" type="button">Atualizar modelos</button>
+    </div>
+
+    <div id="chat" class="chat"></div>
+
+    <textarea id="input" placeholder="Digite sua mensagem..."></textarea>
+    <button id="send">Enviar</button>
+
+    <script>
+      const chatEl = document.getElementById('chat');
+      const inputEl = document.getElementById('input');
+      const sendBtn = document.getElementById('send');
+      const modelSelectEl = document.getElementById('modelSelect');
+      const reloadModelsBtn = document.getElementById('reloadModels');
+
+      function appendMsg(role, text) {
+        const div = document.createElement('div');
+        div.className = `msg ${role}`;
+        div.textContent = `${role === 'user' ? 'Você' : 'Assistente'}: ${text}`;
+        chatEl.appendChild(div);
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+
+      async function sendMessage() {
+        const message = inputEl.value.trim();
+        if (!message) return;
+        const model = modelSelectEl.value;
+        if (!model) {
+          appendMsg('assistant', 'Selecione um modelo antes de enviar.');
+          return;
+        }
+
+        appendMsg('user', message);
+        inputEl.value = '';
+        sendBtn.disabled = true;
+
+        try {
+          const resp = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, model })
+          });
+
+          const data = await resp.json();
+          if (!resp.ok) {
+            appendMsg('assistant', `Erro: ${data.error || 'Falha desconhecida'}`);
+          } else {
+            appendMsg('assistant', data.answer || '(sem resposta)');
+          }
+        } catch (error) {
+          appendMsg('assistant', `Erro de conexão: ${error.message}`);
+        } finally {
+          sendBtn.disabled = false;
+          inputEl.focus();
+        }
+      }
+
+      sendBtn.addEventListener('click', sendMessage);
+      async function loadModels() {
+        modelSelectEl.innerHTML = '<option value="">Carregando modelos...</option>';
+        modelSelectEl.disabled = true;
+        reloadModelsBtn.disabled = true;
+
+        try {
+          const resp = await fetch('/api/models');
+          const data = await resp.json();
+          if (!resp.ok) throw new Error(data.error || 'Falha ao listar modelos.');
+
+          const models = Array.isArray(data.models) ? data.models : [];
+          if (models.length === 0) {
+            modelSelectEl.innerHTML = '<option value="">Nenhum modelo disponível</option>';
+            return;
+          }
+
+          const defaultModel = data.defaultModel;
+          modelSelectEl.innerHTML = '';
+          models.forEach((m) => {
+            const option = document.createElement('option');
+            option.value = m;
+            option.textContent = m;
+            modelSelectEl.appendChild(option);
+          });
+          if (defaultModel && models.includes(defaultModel)) {
+            modelSelectEl.value = defaultModel;
+          }
+        } catch (error) {
+          modelSelectEl.innerHTML = '<option value="">Erro ao carregar modelos</option>';
+          appendMsg('assistant', `Erro ao listar modelos: ${error.message}`);
+        } finally {
+          modelSelectEl.disabled = false;
+          reloadModelsBtn.disabled = false;
+        }
+      }
+
+      reloadModelsBtn.addEventListener('click', loadModels);
+      inputEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          sendMessage();
+        }
+      });
+      loadModels();
+    </script>
+  </body>
+</html>

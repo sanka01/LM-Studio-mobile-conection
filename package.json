@@ -1,0 +1,14 @@
+{
+  "name": "lm-studio-mobile-conection",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relay + micro web app to access LM Studio model from mobile over tunnel",
+  "main": "app/relay.js",
+  "scripts": {
+    "start": "node app/relay.js",
+    "check": "node --check app/relay.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
